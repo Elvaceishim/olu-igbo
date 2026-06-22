@@ -1,0 +1,24 @@
+# python
+venv/
+__pycache__/
+*.pyc
+
+# model artifacts (too large for git; regenerate via export/ scripts)
+*.onnx
+export/onnx/
+
+# datasets
+igbosyncorp_clips/
+igbosyncorp_for_kaggle.zip
+*.zip
+
+# android build / ide
+android/build/
+android/app/build/
+android/.gradle/
+android/.idea/
+android/.kotlin/
+android/local.properties
+
+# os
+.DS_Store
