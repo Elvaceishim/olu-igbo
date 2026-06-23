@@ -479,53 +479,6 @@ class MainActivity : AppCompatActivity() {
         return logMel
     }
 
-    private fun getMelFromServer(audio: FloatArray): FloatArray {
-        val serverUrl = "http://192.168.18.5:8765/mel"
-
-        val pcmBytes = java.io.ByteArrayOutputStream()
-        val buf = java.nio.ByteBuffer.allocate(2)
-        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        for (sample in audio) {
-            buf.clear()
-            buf.putShort((sample * 32768).toInt().toShort())
-            pcmBytes.write(buf.array())
-        }
-        val pcmData = pcmBytes.toByteArray()
-
-        // POST to server
-        val url = java.net.URL(serverUrl)
-        val conn = url.openConnection() as java.net.HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=boundary123")
-        conn.connectTimeout = 10000
-        conn.readTimeout = 30000
-
-        val body = buildMultipart(pcmData)
-        conn.setRequestProperty("Content-Length", body.size.toString())
-        conn.outputStream.write(body)
-
-        val responseBytes = conn.inputStream.readBytes()
-        conn.disconnect()
-
-        val floatBuf = java.nio.ByteBuffer.wrap(responseBytes)
-            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            .asFloatBuffer()
-        val result = FloatArray(80 * 3000)
-        floatBuf.get(result)
-        return result
-    }
-
-    private fun buildMultipart(pcmData: ByteArray): ByteArray {
-        val boundary = "boundary123"
-        val out = java.io.ByteArrayOutputStream()
-        val header = "--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.pcm\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-        out.write(header.toByteArray())
-        out.write(pcmData)
-        out.write("\r\n--$boundary--\r\n".toByteArray())
-        return out.toByteArray()
-    }
-
     // Slaney mel scale + Slaney area normalization, matching librosa/transformers.
     private fun buildMelFilterbank(): Array<FloatArray> {
         val fSp = 200.0 / 3.0
