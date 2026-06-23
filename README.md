@@ -1,4 +1,6 @@
-# Igbo On-Device Speech-to-Text
+# Olu Igbo
+
+*"Olu Igbo" — Igbo Voice.*
 
 An offline, on-device speech recognition system for Igbo — built for the Arm Create: AI Optimization Challenge 2026, Mobile AI track.
 
