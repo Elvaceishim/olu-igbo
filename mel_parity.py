@@ -1,8 +1,8 @@
 """
 Numerical parity harness for the on-device mel spectrogram.
 
-Ground truth is the same transformers WhisperFeatureExtractor that mel_server.py
-serves. We check:
+Ground truth is the same transformers WhisperFeatureExtractor the model was
+trained with (and that legacy/mel_server.py formerly served off-device). We check:
   1. the CURRENT Kotlin algorithm (computeLogMel) ported to numpy  -> shows the drift
   2. a FIXED algorithm (power spectrum + center/reflect pad + Slaney mel) -> should match
   3. a from-scratch Slaney filterbank vs the extractor's own mel_filters

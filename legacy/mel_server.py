@@ -1,3 +1,13 @@
+"""
+SUPERSEDED — kept for project history, not used by the app.
+
+This FastAPI server computed the Whisper log-mel spectrogram off-device as a
+stopgap while the on-device Kotlin mel was numerically wrong. The app now
+computes the mel itself (computeLogMel in MainActivity.kt), verified against
+this same transformers feature extractor in mel_parity.py, so this server is
+no longer part of the pipeline.
+"""
+
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, UploadFile, File
