@@ -42,7 +42,7 @@ OUT_DIR = "/kaggle/working/igbo_full_ft"
 EPOCHS = 3
 BATCH_SIZE = 8
 LR = 1e-5
-EVAL_SAMPLES = 250        # FLEURS-test subset for per-epoch selection (None = full 969)
+EVAL_SAMPLES = None       # per-epoch eval on FLEURS validation (None = full 413)
 NUM_BEAMS = 5
 YO, TRANSCRIBE, NOTS = 50325, 50359, 50363  # <|yo|> proxy, transcribe, no-timestamps
 MAX_LABEL_LEN = 448
@@ -100,7 +100,10 @@ cv_train = cv["train"].map(prepare_cv, remove_columns=cv["train"].column_names).
 train_data = concatenate_datasets([fleurs_train, fleurs_train, cv_train])
 print(f"Train: {len(train_data)} (FLEURS {2*len(fleurs_train)/len(train_data)*100:.0f}% of mix)")
 
-eval_split = "test" if EVAL_SAMPLES is None else f"test[:{EVAL_SAMPLES}]"
+# Select the best checkpoint on the VALIDATION split, not test — scoring test
+# every epoch and reporting that number overfits to it. Final WER is confirmed
+# on the held-out test set separately (evaluate_wer.py).
+eval_split = "validation" if EVAL_SAMPLES is None else f"validation[:{EVAL_SAMPLES}]"
 eval_ds = load_dataset("google/fleurs", "ig_ng", split=eval_split)
 
 
@@ -197,12 +200,12 @@ for epoch in range(EPOCHS):
             model.save_pretrained(f"{OUT_DIR}_checkpoint")  # Kaggle-interruption insurance
 
     wer = eval_wer()
-    print(f"\nepoch {epoch+1}: train_loss {running/len(train_loader):.4f}  FLEURS-WER {wer*100:.2f}%\n")
+    print(f"\nepoch {epoch+1}: train_loss {running/len(train_loader):.4f}  FLEURS-val WER {wer*100:.2f}%\n")
     if wer < best_wer:
         best_wer = wer
         model.save_pretrained(OUT_DIR)
         processor.save_pretrained(OUT_DIR)
         print(f"  new best WER {best_wer*100:.2f}% -> saved to {OUT_DIR}")
 
-print(f"\nDone. Best FLEURS-WER (eval subset): {best_wer*100:.2f}%")
-print("Confirm on the FULL 969-sample test set with evaluate_wer.py before trusting it.")
+print(f"\nDone. Best FLEURS-validation WER: {best_wer*100:.2f}%")
+print("Now confirm the real number on the held-out 969-sample TEST set with evaluate_wer.py.")
