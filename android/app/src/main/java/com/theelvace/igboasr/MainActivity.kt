@@ -53,6 +53,15 @@ class MainActivity : AppCompatActivity() {
     private val HEAD_DIM = 64
     private val ENC_SEQ = 1500
 
+    private val N_FFT = 400
+    private val HOP_LENGTH = 160
+    private val N_FREQS = N_FFT / 2 + 1  // 201
+
+    // precomputed once: DFT basis (N_FREQS x N_FFT) and the Slaney mel filterbank
+    private var dftCos: FloatArray? = null
+    private var dftSin: FloatArray? = null
+    private var melFilterBank: Array<FloatArray>? = null
+
     private val SOT = 50258L
     // 50325 = <|yo|>, reused as a stand-in since whisper has no igbo token
     private val LANG_TOKEN = 50325L
@@ -226,7 +235,7 @@ class MainActivity : AppCompatActivity() {
 
         val melStart = System.nanoTime()
 
-        val melFeatures = getMelFromServer(audio)
+        val melFeatures = computeLogMel(audio)
 
         val melEnd = System.nanoTime()
         android.util.Log.d("BENCHMARK", "Mel extraction: ${(melEnd - melStart) / 1_000_000}ms")
@@ -391,44 +400,81 @@ class MainActivity : AppCompatActivity() {
             .trim()
     }
 
-    private fun computeLogMel(audio: FloatArray): FloatArray {
-        val nFft = 400
-        val hopLength = 160
-        val target = SAMPLE_RATE * 30
-        val padded = FloatArray(target)
-        audio.copyInto(padded, 0, 0, minOf(audio.size, target))
-
-        val window = FloatArray(nFft) { i ->
-            (0.5 * (1.0 - cos(2.0 * PI * i / nFft))).toFloat()
-        }
-
-        val melFilters = buildMelFilterbank(N_MELS, nFft, SAMPLE_RATE)
-        val numFrames = (target - nFft) / hopLength + 1
-        val melSpec = Array(N_MELS) { FloatArray(numFrames) }
-
-        for (frame in 0 until numFrames) {
-            val start = frame * hopLength
-            val windowed = FloatArray(nFft) { i -> padded[start + i] * window[i] }
-            val fftMag = fftMagnitude(windowed)
-            for (mel in 0 until N_MELS) {
-                var sum = 0f
-                for (f in fftMag.indices) sum += melFilters[mel][f] * fftMag[f]
-                melSpec[mel][frame] = max(sum, 1e-10f)
+    private fun ensureMelTables() {
+        if (dftCos != null) return
+        val c = FloatArray(N_FREQS * N_FFT)
+        val s = FloatArray(N_FREQS * N_FFT)
+        for (k in 0 until N_FREQS) {
+            for (n in 0 until N_FFT) {
+                val ang = 2.0 * PI * k * n / N_FFT
+                c[k * N_FFT + n] = cos(ang).toFloat()
+                s[k * N_FFT + n] = sin(ang).toFloat()
             }
         }
+        dftCos = c
+        dftSin = s
+        melFilterBank = buildMelFilterbank()
+    }
+
+    // On-device log-mel that matches the transformers WhisperFeatureExtractor.
+    // Verified against the Python reference in mel_parity.py to ~1e-5.
+    private fun computeLogMel(audio: FloatArray): FloatArray {
+        ensureMelTables()
+        val cosT = dftCos!!
+        val sinT = dftSin!!
+        val mel = melFilterBank!!
+
+        val target = SAMPLE_RATE * 30  // 480000 samples (30s)
+        val signal = FloatArray(target)
+        audio.copyInto(signal, 0, 0, minOf(audio.size, target))
+
+        // center=True: reflect-pad by N_FFT/2 on each side (matches torch.stft)
+        val pad = N_FFT / 2
+        val padded = FloatArray(target + 2 * pad)
+        System.arraycopy(signal, 0, padded, pad, target)
+        for (i in 0 until pad) {
+            padded[pad - 1 - i] = signal[i + 1]
+            padded[pad + target + i] = signal[target - 2 - i]
+        }
+
+        val window = FloatArray(N_FFT) { i -> (0.5 - 0.5 * cos(2.0 * PI * i / N_FFT)).toFloat() }
+
+        // torch.stft gives 1 + len/HOP frames then drops the last; this count matches.
+        val numFrames = minOf((padded.size - N_FFT) / HOP_LENGTH, N_FRAMES)
 
         val logMel = FloatArray(N_MELS * N_FRAMES)
+        val frame = FloatArray(N_FFT)
+        val power = FloatArray(N_FREQS)
         var maxVal = Float.NEGATIVE_INFINITY
-        for (mel in 0 until N_MELS) {
-            for (f in 0 until minOf(numFrames, N_FRAMES)) {
-                val v = log10(melSpec[mel][f])
-                logMel[mel * N_FRAMES + f] = v
+
+        for (t in 0 until numFrames) {
+            val start = t * HOP_LENGTH
+            for (n in 0 until N_FFT) frame[n] = padded[start + n] * window[n]
+
+            for (k in 0 until N_FREQS) {
+                var re = 0.0
+                var im = 0.0
+                val base = k * N_FFT
+                for (n in 0 until N_FFT) {
+                    val x = frame[n]
+                    re += x * cosT[base + n]
+                    im += x * sinT[base + n]
+                }
+                power[k] = (re * re + im * im).toFloat()  // power spectrum, not magnitude
+            }
+
+            for (m in 0 until N_MELS) {
+                val fb = mel[m]
+                var sum = 0f
+                for (k in 0 until N_FREQS) sum += fb[k] * power[k]
+                val v = log10(max(sum, 1e-10f))
+                logMel[m * N_FRAMES + t] = v
                 if (v > maxVal) maxVal = v
             }
         }
+
         for (i in logMel.indices) {
-            logMel[i] = max(logMel[i], maxVal - 8.0f)
-            logMel[i] = (logMel[i] + 4.0f) / 4.0f
+            logMel[i] = (max(logMel[i], maxVal - 8.0f) + 4.0f) / 4.0f
         }
         return logMel
     }
@@ -480,67 +526,38 @@ class MainActivity : AppCompatActivity() {
         return out.toByteArray()
     }
 
-    private fun buildMelFilterbank(nMels: Int, nFft: Int, sr: Int): Array<FloatArray> {
-        val nFreqs = nFft / 2 + 1
-        fun hzToMel(hz: Double) = 2595.0 * log10(1.0 + hz / 700.0)
-        fun melToHz(mel: Double) = 700.0 * (10.0.pow(mel / 2595.0) - 1.0)
+    // Slaney mel scale + Slaney area normalization, matching librosa/transformers.
+    private fun buildMelFilterbank(): Array<FloatArray> {
+        val fSp = 200.0 / 3.0
+        val minLogHz = 1000.0
+        val logStep = ln(6.4) / 27.0
+        val minLogMel = minLogHz / fSp
+
+        fun hzToMel(f: Double) =
+            if (f >= minLogHz) minLogMel + ln(f / minLogHz) / logStep else f / fSp
+        fun melToHz(m: Double) =
+            if (m >= minLogMel) minLogHz * exp(logStep * (m - minLogMel)) else fSp * m
+
         val melMin = hzToMel(0.0)
-        val melMax = hzToMel(sr / 2.0)
-        val melPoints = DoubleArray(nMels + 2) { i ->
-            melToHz(melMin + i * (melMax - melMin) / (nMels + 1))
+        val melMax = hzToMel(SAMPLE_RATE / 2.0)
+        val freqPts = DoubleArray(N_MELS + 2) { i ->
+            melToHz(melMin + i * (melMax - melMin) / (N_MELS + 1))
         }
-        val freqBins = DoubleArray(nFreqs) { i -> i * sr.toDouble() / nFft }
-        val filters = Array(nMels) { FloatArray(nFreqs) }
-        for (m in 0 until nMels) {
-            val lo = melPoints[m]; val center = melPoints[m + 1]; val hi = melPoints[m + 2]
-            for (f in 0 until nFreqs) {
-                val freq = freqBins[f]
-                filters[m][f] = when {
-                    freq < lo || freq > hi -> 0f
-                    freq <= center -> ((freq - lo) / (center - lo)).toFloat()
-                    else -> ((hi - freq) / (hi - center)).toFloat()
-                }
+        val fftFreqs = DoubleArray(N_FREQS) { i -> i * SAMPLE_RATE.toDouble() / N_FFT }
+
+        val filters = Array(N_MELS) { FloatArray(N_FREQS) }
+        for (m in 0 until N_MELS) {
+            val lo = freqPts[m]; val ctr = freqPts[m + 1]; val hi = freqPts[m + 2]
+            val enorm = 2.0 / (hi - lo)
+            for (k in 0 until N_FREQS) {
+                val fr = fftFreqs[k]
+                val lower = (fr - lo) / (ctr - lo)
+                val upper = (hi - fr) / (hi - ctr)
+                val w = max(0.0, min(lower, upper))
+                filters[m][k] = (w * enorm).toFloat()
             }
         }
         return filters
-    }
-
-    private fun fftMagnitude(signal: FloatArray): FloatArray {
-        var n = 1
-        while (n < signal.size) n = n shl 1
-        val real = DoubleArray(n) { if (it < signal.size) signal[it].toDouble() else 0.0 }
-        val imag = DoubleArray(n)
-        var j = 0
-        for (i in 1 until n) {
-            var bit = n shr 1
-            while (j and bit != 0) { j = j xor bit; bit = bit shr 1 }
-            j = j xor bit
-            if (i < j) {
-                val tr = real[i]; real[i] = real[j]; real[j] = tr
-                val ti = imag[i]; imag[i] = imag[j]; imag[j] = ti
-            }
-        }
-        var mlen = 2
-        while (mlen <= n) {
-            val angle = -2.0 * PI / mlen
-            val wr = cos(angle); val wi = sin(angle)
-            var i = 0
-            while (i < n) {
-                var cr = 1.0; var ci = 0.0
-                for (k in 0 until mlen / 2) {
-                    val ur = real[i+k]; val ui = imag[i+k]
-                    val vr = real[i+k+mlen/2]*cr - imag[i+k+mlen/2]*ci
-                    val vi = real[i+k+mlen/2]*ci + imag[i+k+mlen/2]*cr
-                    real[i+k] = ur+vr; imag[i+k] = ui+vi
-                    real[i+k+mlen/2] = ur-vr; imag[i+k+mlen/2] = ui-vi
-                    val ncr = cr*wr - ci*wi; ci = cr*wi + ci*wr; cr = ncr
-                }
-                i += mlen
-            }
-            mlen = mlen shl 1
-        }
-        val nFreqs = signal.size / 2 + 1
-        return FloatArray(nFreqs) { i -> sqrt(real[i]*real[i] + imag[i]*imag[i]).toFloat() }
     }
 
     private fun requestMicPermission() {
