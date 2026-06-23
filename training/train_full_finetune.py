@@ -13,7 +13,8 @@ converged starting point and scored 81% after one epoch. Merging the working
 adapter first keeps that head start while opening up full capacity.
 
 Run on a single GPU (developed for a Kaggle T4). Self-contained — paste as one
-cell. Attach your HF_TOKEN secret if you hit rate limits.
+cell. Attach your HF_TOKEN secret if you hit rate limits. On Kaggle, install the
+eval deps first: `!pip install evaluate jiwer --quiet`
 
 To keep the adapter/export workflow instead of a full model, see the note near
 the model-loading block (attach a fresh LoRA to the merged base).
