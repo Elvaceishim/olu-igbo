@@ -84,7 +84,7 @@ Decoder throughput improves slightly with longer outputs (0.63 → 0.84 tokens/s
 5. Hold the record button, speak Igbo, release
 
 ### Reproducing the model
-All training and export code is in `/training`. The model weights (LoRA adapter) and ONNX exports are published at [`theelvace/whisper-small-igbo`](https://huggingface.co/theelvace/whisper-small-igbo) on HuggingFace.
+Training and evaluation code is in `/training`, and ONNX export/quantization code is in `/export`. The model weights (LoRA adapter) and INT8 ONNX exports are published at [`theelvace/whisper-small-igbo`](https://huggingface.co/theelvace/whisper-small-igbo) on HuggingFace.
 
 ## Limitations, honestly stated
 
