@@ -57,14 +57,14 @@ While re-exporting the decoder after a later training run, I hit a failure mode 
 
 Measured on a Redmi Note 10 (Snapdragon 678, no NPU/GPU delegation — CPU-only ONNX Runtime inference), instrumented directly in the app with `System.nanoTime()`:
 
-| Stage                                               | Latency         |
-| --------------------------------------------------- | --------------- |
-| Mel extraction (on-device, Kotlin DFT)              | ~675–715 ms     |
-| Encoder inference                                   | ~3.8–4.1 s      |
-| Cross-attention initialization                      | ~916–924 ms     |
-| Decoder, per token                                  | ~999 ms average |
-| **Total, short utterance (~5–8 tokens)**            | **~13–16 s**    |
-| **Total, longer utterance (~16–19 tokens)**         | **~24–25 s**    |
+| Stage                                       | Latency         |
+| ------------------------------------------- | --------------- |
+| Mel extraction (on-device, Kotlin DFT)      | ~675–715 ms     |
+| Encoder inference                           | ~3.8–4.1 s      |
+| Cross-attention initialization              | ~916–924 ms     |
+| Decoder, per token                          | ~999 ms average |
+| **Total, short utterance (~5–8 tokens)**    | **~13–16 s**    |
+| **Total, longer utterance (~16–19 tokens)** | **~24–25 s**    |
 
 Decoder throughput improves slightly with longer outputs (0.63 → 0.84 tokens/sec) as the fixed encoder/cross-attention overhead amortizes over more generated tokens.
 
@@ -83,7 +83,7 @@ Decoder throughput improves slightly with longer outputs (0.63 → 0.84 tokens/s
 2. Build and install the Android app via Android Studio
 3. Hold the record button, speak Igbo, release
 
-Everything runs on-device — no server, no network connection required.
+Everything runs on-device. No server or network connection required.
 
 ### Reproducing the model
 
@@ -93,7 +93,7 @@ Training and evaluation code is in `/training`, and ONNX export/quantization cod
 
 - **62.45% WER is a real number, not a polished demo statistic.** Short, clear utterances transcribe well. Longer or more complex sentences show the model's actual error rate. I'd rather report this accurately than imply more than the model delivers.
 - **Live microphone audio is harder than clean test-set audio.** FLEURS' 62.45% WER is measured on studio-quality recordings; real-world phone mic input with background noise will generally perform worse.
-- **~1 token/second on CPU is slow** for a 173 MB decoder on a 2021 mid-range chip. The natural next optimization is NNAPI or GPU delegation, which this submission doesn't yet use — a clear, scoped next step.
+- **~1 token/second on CPU is slow** for a 173 MB decoder on a 2021 mid-range chip. The natural next optimization is NNAPI or GPU delegation, which this submission doesn't yet use.
 
 ## What's reusable here, beyond this specific model
 
