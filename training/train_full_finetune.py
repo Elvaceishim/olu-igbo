@@ -140,7 +140,8 @@ for p in model.parameters():
 #       target_modules=["q_proj","k_proj","v_proj","out_proj"], lora_dropout=0.05, bias="none"))
 
 model.config.forced_decoder_ids = None
-model.config.suppress_tokens = []
+model.config.suppress_tokens = None  # None, not [] — an empty list trips save_pretrained's
+                                     # "generation params don't belong in config" check
 # SpecAugment — applied inside the Whisper encoder during training only.
 model.config.apply_spec_augment = True
 model.config.mask_time_prob = 0.05
