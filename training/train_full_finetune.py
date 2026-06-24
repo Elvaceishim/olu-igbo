@@ -129,6 +129,10 @@ base = WhisperForConditionalGeneration.from_pretrained(
     BASE_MODEL, torch_dtype=torch.float32, device_map={"": 0}
 )
 model = PeftModel.from_pretrained(base, WARM_START_ADAPTER).merge_and_unload()
+# merge_and_unload leaves the base params frozen (PEFT froze everything but the
+# adapter); unfreeze the whole network for full fine-tuning.
+for p in model.parameters():
+    p.requires_grad_(True)
 # To keep the LoRA/export workflow instead, replace the line above with a fresh
 # wider adapter on the merged base:
 #   merged = PeftModel.from_pretrained(base, WARM_START_ADAPTER).merge_and_unload()
