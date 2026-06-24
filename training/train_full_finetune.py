@@ -59,7 +59,7 @@ YO, TRANSCRIBE, NOTS = 50325, 50359, 50363  # <|yo|> proxy, transcribe, no-times
 MAX_LABEL_LEN = 448
 NAIJA_DATASET = "naijavoices/naijavoices-dataset"
 NAIJA_CONFIG = "igbo-batch-0"
-NAIJA_N = 10000           # NaijaVoices Igbo utterances to stream in (raise for more data)
+NAIJA_N = 25000           # NaijaVoices Igbo utterances to stream in (raise for more data)
 
 processor = WhisperProcessor.from_pretrained(BASE_MODEL)
 wer_metric = evaluate.load("wer")
