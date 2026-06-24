@@ -20,6 +20,7 @@ To keep the adapter/export workflow instead of a full model, see the note near
 the model-loading block (attach a fresh LoRA to the merged base).
 """
 
+import os
 import re
 import numpy as np
 import torch
@@ -28,13 +29,22 @@ from dataclasses import dataclass
 from typing import Any
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from datasets import load_dataset, Audio, concatenate_datasets
+from datasets import load_dataset, Audio, concatenate_datasets, Dataset
 from transformers import (
     WhisperProcessor,
     WhisperForConditionalGeneration,
     get_linear_schedule_with_warmup,
 )
 from peft import PeftModel
+
+# On Kaggle, pull HF_TOKEN from secrets if it isn't already in the environment
+# (needed for the gated NaijaVoices dataset).
+if not os.environ.get("HF_TOKEN"):
+    try:
+        from kaggle_secrets import UserSecretsClient
+        os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
+    except Exception:
+        pass
 
 # ---- config ----
 BASE_MODEL = "openai/whisper-small"
@@ -47,6 +57,9 @@ EVAL_SAMPLES = None       # per-epoch eval on FLEURS validation (None = full 413
 NUM_BEAMS = 5
 YO, TRANSCRIBE, NOTS = 50325, 50359, 50363  # <|yo|> proxy, transcribe, no-timestamps
 MAX_LABEL_LEN = 448
+NAIJA_DATASET = "naijavoices/naijavoices-dataset"
+NAIJA_CONFIG = "igbo-batch-0"
+NAIJA_N = 10000           # NaijaVoices Igbo utterances to stream in (raise for more data)
 
 processor = WhisperProcessor.from_pretrained(BASE_MODEL)
 wer_metric = evaluate.load("wer")
@@ -95,10 +108,36 @@ cv = load_dataset("benjaminogbonna/nigerian_common_voice_dataset", name="igbo")
 cv = cv.cast_column("audio", Audio(sampling_rate=16000))
 cv_train = cv["train"].map(prepare_cv, remove_columns=cv["train"].column_names).filter(is_valid_length)
 
-# FLEURS is the eval domain (read speech), so oversample it 2x to keep the mix
-# pointed at the distribution we're scored on. Next data lever: add BibleTTS Igbo
-# (clean read speech) here — verify the dataset id before relying on it.
-train_data = concatenate_datasets([fleurs_train, fleurs_train, cv_train])
+
+def naijavoices_gen():
+    # Stream the gated NaijaVoices Igbo batch (446 GB total — never downloaded whole)
+    # and resample 48 kHz -> 16 kHz. from_generator Arrow-caches results to disk.
+    stream = load_dataset(
+        NAIJA_DATASET, NAIJA_CONFIG, split="train", streaming=True, token=os.environ.get("HF_TOKEN")
+    ).cast_column("audio", Audio(sampling_rate=16000))
+    n = 0
+    for ex in stream:
+        if n >= NAIJA_N:
+            break
+        arr = ex["audio"]["array"]
+        if len(arr) > 16000 * 30:  # skip clips beyond Whisper's 30s window
+            continue
+        labels = processor.tokenizer(normalize_igbo(ex["text"])).input_ids
+        if len(labels) > MAX_LABEL_LEN:
+            continue
+        feats = processor.feature_extractor(arr, sampling_rate=16000, return_tensors="np").input_features[0]
+        yield {"input_features": feats, "labels": labels}
+        n += 1
+
+
+print(f"Streaming NaijaVoices Igbo (up to {NAIJA_N} utterances) — this takes a while...")
+naija_train = Dataset.from_generator(naijavoices_gen)
+print(f"NaijaVoices processed: {len(naija_train)}")
+
+# FLEURS is the eval domain (read speech), so oversample it 2x to keep the mix pointed
+# at the distribution we're scored on. If FLEURS-val regresses after adding NaijaVoices,
+# raise the FLEURS oversample factor (domain guardrail, same lesson as IgboSynCorp).
+train_data = concatenate_datasets([fleurs_train, fleurs_train, cv_train, naija_train])
 print(f"Train: {len(train_data)} (FLEURS {2*len(fleurs_train)/len(train_data)*100:.0f}% of mix)")
 
 # Select the best checkpoint on the VALIDATION split, not test — scoring test
