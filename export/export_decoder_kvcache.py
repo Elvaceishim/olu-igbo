@@ -15,13 +15,17 @@ HEAD_DIM = 64
 D_MODEL = 768
 ENC_SEQ = 1500
 
-print("Loading and merging model...")
+# Default to the full fine-tuned model; FULL_MODEL="" falls back to base + adapter.
+FULL_MODEL = os.environ.get("FULL_MODEL", "theelvace/whisper-small-igbo-fullft")
+
+print("Loading model...")
 processor = WhisperProcessor.from_pretrained(BASE_MODEL)
-base = WhisperForConditionalGeneration.from_pretrained(
-    BASE_MODEL, torch_dtype=torch.float32
-)
-model = PeftModel.from_pretrained(base, HF_REPO)
-model = model.merge_and_unload()
+if FULL_MODEL:
+    print(f"Loading full fine-tuned model: {FULL_MODEL}")
+    model = WhisperForConditionalGeneration.from_pretrained(FULL_MODEL, torch_dtype=torch.float32)
+else:
+    base = WhisperForConditionalGeneration.from_pretrained(BASE_MODEL, torch_dtype=torch.float32)
+    model = PeftModel.from_pretrained(base, HF_REPO).merge_and_unload()
 model.eval()
 
 class WhisperDecoderWithCache(nn.Module):

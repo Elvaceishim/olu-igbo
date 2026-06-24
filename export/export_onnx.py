@@ -29,21 +29,21 @@ def load_compatible_adapter_dir(repo):
     return local_dir
 
 
+# Default to the full fine-tuned model. Set FULL_MODEL="" to fall back to the
+# original base + LoRA-adapter path that produced the 62.45% model.
+FULL_MODEL = os.environ.get("FULL_MODEL", "theelvace/whisper-small-igbo-fullft")
+
 print("Loading model...")
 processor = WhisperProcessor.from_pretrained(BASE_MODEL)
 
-base_model = WhisperForConditionalGeneration.from_pretrained(
-    BASE_MODEL,
-    torch_dtype=torch.float32,
-)
-
-adapter_dir = load_compatible_adapter_dir(HF_REPO)
-model = PeftModel.from_pretrained(base_model, adapter_dir)
-
-print("Merging LoRA weights into base model...")
-model = model.merge_and_unload()
+if FULL_MODEL:
+    print(f"Loading full fine-tuned model: {FULL_MODEL}")
+    model = WhisperForConditionalGeneration.from_pretrained(FULL_MODEL, torch_dtype=torch.float32)
+else:
+    base_model = WhisperForConditionalGeneration.from_pretrained(BASE_MODEL, torch_dtype=torch.float32)
+    model = PeftModel.from_pretrained(base_model, load_compatible_adapter_dir(HF_REPO)).merge_and_unload()
 model.eval()
-print(f"Merged model type: {type(model)}")
+print(f"Model type: {type(model)}")
 
 print("Exporting encoder...")
 encoder = model.model.encoder

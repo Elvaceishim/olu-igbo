@@ -8,13 +8,17 @@ BASE_MODEL = "openai/whisper-small"
 OUTPUT_DIR = "export/onnx"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-print("Loading and merging model...")
+# Default to the full fine-tuned model; FULL_MODEL="" falls back to base + adapter.
+FULL_MODEL = os.environ.get("FULL_MODEL", "theelvace/whisper-small-igbo-fullft")
+
+print("Loading model...")
 processor = WhisperProcessor.from_pretrained(BASE_MODEL)
-base_model = WhisperForConditionalGeneration.from_pretrained(
-    BASE_MODEL, torch_dtype=torch.float32,
-)
-model = PeftModel.from_pretrained(base_model, HF_REPO)
-model = model.merge_and_unload()
+if FULL_MODEL:
+    print(f"Loading full fine-tuned model: {FULL_MODEL}")
+    model = WhisperForConditionalGeneration.from_pretrained(FULL_MODEL, torch_dtype=torch.float32)
+else:
+    base_model = WhisperForConditionalGeneration.from_pretrained(BASE_MODEL, torch_dtype=torch.float32)
+    model = PeftModel.from_pretrained(base_model, HF_REPO).merge_and_unload()
 model.eval()
 
 decoder = model.model.decoder

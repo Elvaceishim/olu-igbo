@@ -21,6 +21,8 @@ This project fine-tunes Whisper Small for Igbo, exports it as a three-stage ONNX
 
 These are real numbers, measured directly on-device with `System.nanoTime()` instrumentation around each inference stage. Not estimated. The methodology section below explains exactly how I got from 68.95% to 62.45%, including what I tried that _didn't_ work.
 
+> **Improvement in progress:** a warm-start full fine-tune lowers WER to **48.58%** (FLEURS test), and adding NaijaVoices data reaches **42.75%** on FLEURS validation (test confirmation pending) — see [Training methodology](#training-methodology). The on-device size/latency figures here describe the currently-exported 62.45% model; the improved model gets re-exported once it's finalized.
+
 ## Architecture
 
 Whisper's standard encoder-decoder architecture doesn't export cleanly to a single ONNX graph for streaming, on-device generation — the decoder needs to attend to fixed encoder output across many autoregressive steps, and naively re-running the full encoder-decoder stack per token is far too slow for a mobile CPU. I split inference into three stages:
@@ -46,6 +48,8 @@ While re-exporting the decoder after a later training run, I hit a failure mode 
 **Data:** Started with FLEURS Igbo (2,839 train examples). Added Common Voice Igbo via the `benjaminogbonna/nigerian_common_voice_dataset` HuggingFace mirror (4,571 train examples), bringing the combined training set to 7,410 examples — a 2.6x increase. This combination took WER from 68.95% → **62.45%**, verified on the full FLEURS test set after every training run, never trusted from validation loss alone.
 
 **What I tried that didn't work, and why that's worth knowing:** I sourced IgboSynCorp — a 40-hour annotated Igbo speech corpus from the University of Ibadan and Afe-Babalola University (Lacuna Fund-funded, hosted on Harvard Dataverse), built from oral narrative recordings across five Southeast Nigerian states. I wrote an ELAN (`.eaf`) parser using `pympi` to extract 2,962 clean, timestamp-aligned speech segments from the raw recordings — a genuinely reusable pipeline for anyone working with linguistic ELAN-annotated audio corpora. Merging this into training, even with FLEURS oversampled 2x to counteract domain dilution, consistently _regressed_ FLEURS test WER (63.99% and 63.54% in two separate trials) rather than improving it. My read: IgboSynCorp's oral-narrative recording style is acoustically and stylistically distant enough from FLEURS' read-speech style that training on it pulls the model away from the specific distribution it's evaluated against, even though the data itself is clean and the extraction pipeline worked correctly. I kept the verified 62.45% model rather than ship a result that looked better on training metrics but tested worse. The IgboSynCorp extraction code is included in this repo since the corpus itself is a real resource for future Igbo NLP work, even though it didn't help this specific benchmark.
+
+**Pushing further — full fine-tune + NaijaVoices:** With the 62.45% LoRA baseline established, I switched to a warm-start full fine-tune — merge the adapter into the base model, then fine-tune the whole network. The inference model stays the same size (still whisper-small, on-device-safe), but a full network has far more capacity than a 3.5M-parameter adapter. With SpecAugment added and checkpoints selected on FLEURS _validation_ (not test, to avoid fitting the reported number), this reached **48.58% on the FLEURS test set**. Then I added ~10k streamed utterances of [NaijaVoices](https://huggingface.co/datasets/naijavoices/naijavoices-dataset) — a ~600-hour Igbo read-speech corpus — which took it to **42.75% on FLEURS validation** (test confirmation pending GPU availability). Unlike IgboSynCorp, NaijaVoices is domain-compatible with FLEURS and helped from the first epoch. Training code: `training/train_full_finetune.py`.
 
 **Hard rules I learned:**
 
@@ -103,4 +107,10 @@ Training and evaluation code is in `/training`, and ONNX export/quantization cod
 
 ## License
 
-MIT
+The **code** in this repository is MIT licensed.
+
+**Model weights and training data** carry the licenses of their sources — honor these if you reuse the fine-tuned model:
+
+- Base model: OpenAI Whisper (MIT)
+- FLEURS (CC-BY-4.0), Common Voice Igbo (CC0)
+- NaijaVoices (CC-BY-NC-SA-4.0) — **non-commercial, share-alike**. The improved model (`theelvace/whisper-small-igbo-fullft`) is fine-tuned on NaijaVoices, so it inherits that non-commercial/share-alike restriction. The original 62.45% model (`theelvace/whisper-small-igbo`, FLEURS + Common Voice only) is not subject to it.
