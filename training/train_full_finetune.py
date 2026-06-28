@@ -50,6 +50,9 @@ if not os.environ.get("HF_TOKEN"):
 BASE_MODEL = "openai/whisper-small"
 WARM_START_ADAPTER = "theelvace/whisper-small-igbo"  # the ~60% model to build on
 OUT_DIR = "/kaggle/working/igbo_full_ft"
+PUSH_REPO = os.environ.get("PUSH_REPO", "")  # set to a NEW HF repo to auto-upload the
+                                             # best checkpoint each epoch (survives a
+                                             # mid-run session/quota cutoff)
 EPOCHS = 3
 BATCH_SIZE = 8
 LR = 1e-5
@@ -251,6 +254,15 @@ for epoch in range(EPOCHS):
         model.save_pretrained(OUT_DIR)
         processor.save_pretrained(OUT_DIR)
         print(f"  new best WER {best_wer*100:.2f}% -> saved to {OUT_DIR}")
+        if PUSH_REPO:
+            try:
+                from huggingface_hub import HfApi
+                api = HfApi(token=os.environ.get("HF_TOKEN"))
+                api.create_repo(PUSH_REPO, exist_ok=True)
+                api.upload_folder(folder_path=OUT_DIR, repo_id=PUSH_REPO, repo_type="model")
+                print(f"  pushed best to HF: {PUSH_REPO}")
+            except Exception as e:
+                print(f"  HF push failed (non-fatal): {e}")
 
 print(f"\nDone. Best FLEURS-validation WER: {best_wer*100:.2f}%")
 print("Now confirm the real number on the held-out 969-sample TEST set with evaluate_wer.py.")
