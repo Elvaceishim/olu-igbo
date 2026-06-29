@@ -53,16 +53,19 @@ OUT_DIR = "/kaggle/working/igbo_full_ft"
 PUSH_REPO = os.environ.get("PUSH_REPO", "")  # set to a NEW HF repo to auto-upload the
                                              # best checkpoint each epoch (survives a
                                              # mid-run session/quota cutoff)
-EPOCHS = 3
+EPOCHS = int(os.environ.get("EPOCHS", "3"))
 BATCH_SIZE = 8
-LR = 1e-5
+LR = float(os.environ.get("LR", "1e-5"))
 EVAL_SAMPLES = None       # per-epoch eval on FLEURS validation (None = full 413)
 NUM_BEAMS = 5
 YO, TRANSCRIBE, NOTS = 50325, 50359, 50363  # <|yo|> proxy, transcribe, no-timestamps
 MAX_LABEL_LEN = 448
 NAIJA_DATASET = "naijavoices/naijavoices-dataset"
 NAIJA_CONFIG = "igbo-batch-0"
-NAIJA_N = 25000           # NaijaVoices Igbo utterances to stream in (raise for more data)
+NAIJA_N = int(os.environ.get("NAIJA_N", "25000"))   # NaijaVoices utterances (0 = skip)
+FLEURS_OVERSAMPLE = int(os.environ.get("FLEURS_OVERSAMPLE", "2"))  # weight on the eval domain
+# Continue from a full fine-tuned model instead of base + adapter (e.g. a domain-adapt pass).
+WARM_START_MODEL = os.environ.get("WARM_START_MODEL", "")
 
 processor = WhisperProcessor.from_pretrained(BASE_MODEL)
 wer_metric = evaluate.load("wer")
@@ -133,15 +136,19 @@ def naijavoices_gen():
         n += 1
 
 
-print(f"Streaming NaijaVoices Igbo (up to {NAIJA_N} utterances) — this takes a while...")
-naija_train = Dataset.from_generator(naijavoices_gen)
-print(f"NaijaVoices processed: {len(naija_train)}")
+# FLEURS is the eval domain (read speech), so oversample it to keep the mix pointed at
+# the distribution we're scored on. NAIJA_N=0 skips NaijaVoices (e.g. a FLEURS-focused
+# domain-adapt pass that re-points an already-strong model at the test distribution).
+parts = [fleurs_train] * FLEURS_OVERSAMPLE + [cv_train]
+if NAIJA_N > 0:
+    print(f"Streaming NaijaVoices Igbo (up to {NAIJA_N} utterances) — this takes a while...")
+    naija_train = Dataset.from_generator(naijavoices_gen)
+    print(f"NaijaVoices processed: {len(naija_train)}")
+    parts.append(naija_train)
 
-# FLEURS is the eval domain (read speech), so oversample it 2x to keep the mix pointed
-# at the distribution we're scored on. If FLEURS-val regresses after adding NaijaVoices,
-# raise the FLEURS oversample factor (domain guardrail, same lesson as IgboSynCorp).
-train_data = concatenate_datasets([fleurs_train, fleurs_train, cv_train, naija_train])
-print(f"Train: {len(train_data)} (FLEURS {2*len(fleurs_train)/len(train_data)*100:.0f}% of mix)")
+train_data = concatenate_datasets(parts)
+fleurs_pct = FLEURS_OVERSAMPLE * len(fleurs_train) / len(train_data) * 100
+print(f"Train: {len(train_data)} (FLEURS {fleurs_pct:.0f}% of mix, oversample {FLEURS_OVERSAMPLE}x)")
 
 # Select the best checkpoint on the VALIDATION split, not test — scoring test
 # every epoch and reporting that number overfits to it. Final WER is confirmed
@@ -166,13 +173,18 @@ class Collator:
         return batch
 
 
-print("Warm-starting: merging the existing adapter into the base model...")
-base = WhisperForConditionalGeneration.from_pretrained(
-    BASE_MODEL, torch_dtype=torch.float32, device_map={"": 0}
-)
-model = PeftModel.from_pretrained(base, WARM_START_ADAPTER).merge_and_unload()
-# merge_and_unload leaves the base params frozen (PEFT froze everything but the
-# adapter); unfreeze the whole network for full fine-tuning.
+if WARM_START_MODEL:
+    print(f"Warm-starting from full model: {WARM_START_MODEL}")
+    model = WhisperForConditionalGeneration.from_pretrained(
+        WARM_START_MODEL, torch_dtype=torch.float32, device_map={"": 0}
+    )
+else:
+    print("Warm-starting: merging the existing adapter into the base model...")
+    base = WhisperForConditionalGeneration.from_pretrained(
+        BASE_MODEL, torch_dtype=torch.float32, device_map={"": 0}
+    )
+    model = PeftModel.from_pretrained(base, WARM_START_ADAPTER).merge_and_unload()
+# unfreeze the whole network for full fine-tuning (PEFT/merge leaves base params frozen)
 for p in model.parameters():
     p.requires_grad_(True)
 # To keep the LoRA/export workflow instead, replace the line above with a fresh
