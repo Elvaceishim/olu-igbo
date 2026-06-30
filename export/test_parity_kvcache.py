@@ -20,9 +20,9 @@ MODEL = os.environ.get("FULL_MODEL", "theelvace/whisper-small-igbo-25k")
 NUM_LAYERS, NUM_HEADS, HEAD_DIM, ENC_SEQ, D_MODEL = 12, 12, 64, 1500, 768
 PREFIX = [50258, 50325, 50359, 50363]  # sot, <|yo|>, transcribe, no-timestamps
 
-ENC = "export/onnx/whisper_encoder_int8.onnx"
-CROSS = "export/onnx/whisper_cross_attn_init_int8.onnx"
-DEC = "export/onnx/whisper_decoder_kvcache_int8.onnx"
+ENC = os.environ.get("ENC_ONNX", "export/onnx/whisper_encoder_int8.onnx")
+CROSS = os.environ.get("CROSS_ONNX", "export/onnx/whisper_cross_attn_init_int8.onnx")
+DEC = os.environ.get("DEC_ONNX", "export/onnx/whisper_decoder_kvcache_int8.onnx")
 
 processor = WhisperProcessor.from_pretrained("openai/whisper-small")
 model = WhisperForConditionalGeneration.from_pretrained(MODEL, torch_dtype=torch.float32).eval()
@@ -58,7 +58,7 @@ self_v = [np.zeros((1, NUM_HEADS, 0, HEAD_DIM), dtype=np.float32) for _ in range
 
 
 def step(token):
-    feeds = {"input_ids": np.array([[token]], dtype=np.int64), "encoder_hidden_states": enc_out}
+    feeds = {"input_ids": np.array([[token]], dtype=np.int64)}
     for i in range(NUM_LAYERS):
         feeds[f"past_self_k_{i}"] = self_k[i]
         feeds[f"past_self_v_{i}"] = self_v[i]

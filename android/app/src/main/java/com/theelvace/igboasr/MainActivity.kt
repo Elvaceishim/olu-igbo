@@ -304,12 +304,6 @@ class MainActivity : AppCompatActivity() {
                 env, LongBuffer.wrap(longArrayOf(inputToken)), longArrayOf(1, 1)
             )
 
-            // KV-cache decoder takes encoder_hidden_states; with the cross cache
-            // already supplied, cross-attention reuses it instead of recomputing.
-            feeds["encoder_hidden_states"] = OnnxTensor.createTensor(
-                env, FloatBuffer.wrap(encFlat), longArrayOf(1, ENC_SEQ.toLong(), 768)
-            )
-
             for (i in 0 until NUM_LAYERS) {
                 feeds["past_self_k_$i"] = OnnxTensor.createTensor(
                     env, FloatBuffer.wrap(selfKCache[i]),
