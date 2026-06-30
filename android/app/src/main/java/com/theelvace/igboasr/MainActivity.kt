@@ -291,6 +291,21 @@ class MainActivity : AppCompatActivity() {
         val maxNewTokens = 40
         val decoderStepTimes = mutableListOf<Long>()
 
+        // cross-attention K/V are identical for every decode step — build these tensors
+        // once and reuse them, instead of recreating ~110 MB of native tensors per token
+        // (that per-step churn was OOM-crashing the app on longer utterances).
+        val crossFeeds = mutableMapOf<String, OnnxTensor>()
+        for (i in 0 until NUM_LAYERS) {
+            crossFeeds["past_cross_k_$i"] = OnnxTensor.createTensor(
+                env, FloatBuffer.wrap(crossKCache[i]),
+                longArrayOf(1, NUM_HEADS.toLong(), ENC_SEQ.toLong(), HEAD_DIM.toLong())
+            )
+            crossFeeds["past_cross_v_$i"] = OnnxTensor.createTensor(
+                env, FloatBuffer.wrap(crossVCache[i]),
+                longArrayOf(1, NUM_HEADS.toLong(), ENC_SEQ.toLong(), HEAD_DIM.toLong())
+            )
+        }
+
         for (stepIdx in 0 until (prefix.size + maxNewTokens)) {
             val stepStart = System.nanoTime()
             val inputToken = if (stepIdx < prefix.size) prefix[stepIdx]
@@ -298,35 +313,25 @@ class MainActivity : AppCompatActivity() {
 
             if (stepIdx >= prefix.size && (tokenIds.isEmpty() || tokenIds.last() == EOT)) break
 
-            val feeds = mutableMapOf<String, OnnxTensor>()
+            // per-step tensors (input_ids + the growing self cache); cross is reused
+            val stepFeeds = mutableMapOf<String, OnnxTensor>()
 
-            feeds["input_ids"] = OnnxTensor.createTensor(
+            stepFeeds["input_ids"] = OnnxTensor.createTensor(
                 env, LongBuffer.wrap(longArrayOf(inputToken)), longArrayOf(1, 1)
             )
 
             for (i in 0 until NUM_LAYERS) {
-                feeds["past_self_k_$i"] = OnnxTensor.createTensor(
+                stepFeeds["past_self_k_$i"] = OnnxTensor.createTensor(
                     env, FloatBuffer.wrap(selfKCache[i]),
                     longArrayOf(1, NUM_HEADS.toLong(), selfCacheSeqLen.toLong(), HEAD_DIM.toLong())
                 )
-                feeds["past_self_v_$i"] = OnnxTensor.createTensor(
+                stepFeeds["past_self_v_$i"] = OnnxTensor.createTensor(
                     env, FloatBuffer.wrap(selfVCache[i]),
                     longArrayOf(1, NUM_HEADS.toLong(), selfCacheSeqLen.toLong(), HEAD_DIM.toLong())
                 )
             }
 
-            for (i in 0 until NUM_LAYERS) {
-                feeds["past_cross_k_$i"] = OnnxTensor.createTensor(
-                    env, FloatBuffer.wrap(crossKCache[i]),
-                    longArrayOf(1, NUM_HEADS.toLong(), ENC_SEQ.toLong(), HEAD_DIM.toLong())
-                )
-                feeds["past_cross_v_$i"] = OnnxTensor.createTensor(
-                    env, FloatBuffer.wrap(crossVCache[i]),
-                    longArrayOf(1, NUM_HEADS.toLong(), ENC_SEQ.toLong(), HEAD_DIM.toLong())
-                )
-            }
-
-            val decOut = dec.run(feeds)
+            val decOut = dec.run(stepFeeds + crossFeeds)
             val logits = decOut[0].value as Array<Array<FloatArray>>
             val lastLogits = logits[0][0]
 
@@ -352,7 +357,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             selfCacheSeqLen++
-            feeds.values.forEach { it.close() }
+            stepFeeds.values.forEach { it.close() }  // cross tensors are reused, not closed here
             decOut.close()
 
             val stepEnd = System.nanoTime()
@@ -382,6 +387,8 @@ class MainActivity : AppCompatActivity() {
                 if (nextToken == EOT) break
             }
         }
+
+        crossFeeds.values.forEach { it.close() }  // free the reused cross tensors
 
         val totalDecoderTime = decoderStepTimes.sum()
         val avgStepTime = if (decoderStepTimes.isNotEmpty()) totalDecoderTime / decoderStepTimes.size else 0
