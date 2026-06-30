@@ -288,7 +288,7 @@ class MainActivity : AppCompatActivity() {
         val prefix = longArrayOf(SOT, LANG_TOKEN, TRANSCRIBE, NO_TIMESTAMPS)
         val tokenIds = mutableListOf<Long>()
         val recentTokens = mutableListOf<Long>()
-        val maxNewTokens = 40
+        val maxNewTokens = 28
         val decoderStepTimes = mutableListOf<Long>()
 
         // cross-attention K/V are identical for every decode step — build these tensors
