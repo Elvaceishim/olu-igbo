@@ -304,6 +304,12 @@ class MainActivity : AppCompatActivity() {
                 env, LongBuffer.wrap(longArrayOf(inputToken)), longArrayOf(1, 1)
             )
 
+            // KV-cache decoder takes encoder_hidden_states; with the cross cache
+            // already supplied, cross-attention reuses it instead of recomputing.
+            feeds["encoder_hidden_states"] = OnnxTensor.createTensor(
+                env, FloatBuffer.wrap(encFlat), longArrayOf(1, ENC_SEQ.toLong(), 768)
+            )
+
             for (i in 0 until NUM_LAYERS) {
                 feeds["past_self_k_$i"] = OnnxTensor.createTensor(
                     env, FloatBuffer.wrap(selfKCache[i]),
@@ -331,9 +337,10 @@ class MainActivity : AppCompatActivity() {
             val lastLogits = logits[0][0]
 
             val newSeqLen = selfCacheSeqLen + 1
-            // decoder outputs: logits, then present self_k/self_v per layer
+            // decoder outputs 4 tensors per layer (present self_k, self_v, cross_k, cross_v).
+            // We only need the self caches; cross is constant across steps, so skip it.
             for (i in 0 until NUM_LAYERS) {
-                val baseIdx = 1 + i * 2
+                val baseIdx = 1 + i * 4
                 val skArr = decOut[baseIdx].value as Array<Array<Array<FloatArray>>>
                 val newSK = FloatArray(NUM_HEADS * newSeqLen * HEAD_DIM)
                 for (h in 0 until NUM_HEADS)

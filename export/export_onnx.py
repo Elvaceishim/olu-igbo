@@ -31,7 +31,7 @@ def load_compatible_adapter_dir(repo):
 
 # Default to the full fine-tuned model. Set FULL_MODEL="" to fall back to the
 # original base + LoRA-adapter path that produced the 62.45% model.
-FULL_MODEL = os.environ.get("FULL_MODEL", "theelvace/whisper-small-igbo-fullft")
+FULL_MODEL = os.environ.get("FULL_MODEL", "theelvace/whisper-small-igbo-25k")
 
 print("Loading model...")
 processor = WhisperProcessor.from_pretrained(BASE_MODEL)

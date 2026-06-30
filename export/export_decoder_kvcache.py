@@ -16,7 +16,7 @@ D_MODEL = 768
 ENC_SEQ = 1500
 
 # Default to the full fine-tuned model; FULL_MODEL="" falls back to base + adapter.
-FULL_MODEL = os.environ.get("FULL_MODEL", "theelvace/whisper-small-igbo-fullft")
+FULL_MODEL = os.environ.get("FULL_MODEL", "theelvace/whisper-small-igbo-25k")
 
 print("Loading model...")
 processor = WhisperProcessor.from_pretrained(BASE_MODEL)
