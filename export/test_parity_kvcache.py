@@ -66,7 +66,7 @@ def step(token):
         feeds[f"past_cross_v_{i}"] = cross_v[i]
     out = dec.run(None, feeds)
     for i in range(NUM_LAYERS):
-        b = 1 + i * 4  # logits, then (self_k, self_v, cross_k, cross_v) per layer
+        b = 1 + i * 2  # logits, then (self_k, self_v) per layer
         self_k[i] = out[b]
         self_v[i] = out[b + 1]
     return out[0]

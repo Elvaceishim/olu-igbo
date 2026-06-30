@@ -288,7 +288,7 @@ class MainActivity : AppCompatActivity() {
         val prefix = longArrayOf(SOT, LANG_TOKEN, TRANSCRIBE, NO_TIMESTAMPS)
         val tokenIds = mutableListOf<Long>()
         val recentTokens = mutableListOf<Long>()
-        val maxNewTokens = 20
+        val maxNewTokens = 40
         val decoderStepTimes = mutableListOf<Long>()
 
         for (stepIdx in 0 until (prefix.size + maxNewTokens)) {
@@ -331,10 +331,9 @@ class MainActivity : AppCompatActivity() {
             val lastLogits = logits[0][0]
 
             val newSeqLen = selfCacheSeqLen + 1
-            // decoder outputs 4 tensors per layer (present self_k, self_v, cross_k, cross_v).
-            // We only need the self caches; cross is constant across steps, so skip it.
+            // decoder outputs: logits, then present self_k / self_v per layer
             for (i in 0 until NUM_LAYERS) {
-                val baseIdx = 1 + i * 4
+                val baseIdx = 1 + i * 2
                 val skArr = decOut[baseIdx].value as Array<Array<Array<FloatArray>>>
                 val newSK = FloatArray(NUM_HEADS * newSeqLen * HEAD_DIM)
                 for (h in 0 until NUM_HEADS)

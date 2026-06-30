@@ -44,10 +44,12 @@ class WhisperDecoderWithCache(nn.Module):
         logits = self.proj_out(out.last_hidden_state)
         present = out.past_key_values
         outputs = [logits]
-        # each layer_kv is (self_k, self_v, cross_k, cross_v)
+        # each layer_kv is (self_k, self_v, cross_k, cross_v); the cross K/V are
+        # constant across steps, so output only the self caches — outputting cross
+        # every step wastes ~110 MB of native memory per call and OOM-crashes phones.
         for layer_kv in present:
-            for kv in layer_kv:
-                outputs.append(kv)
+            outputs.append(layer_kv[0])  # present self_k
+            outputs.append(layer_kv[1])  # present self_v
         return tuple(outputs)
 
 decoder_with_cache = WhisperDecoderWithCache(
@@ -80,8 +82,7 @@ for i in range(NUM_LAYERS):
 
 output_names = ["logits"]
 for i in range(NUM_LAYERS):
-    output_names += [f"present_self_k_{i}", f"present_self_v_{i}",
-                     f"present_cross_k_{i}", f"present_cross_v_{i}"]
+    output_names += [f"present_self_k_{i}", f"present_self_v_{i}"]
 
 dynamic_axes = {
     "input_ids": {0: "batch", 1: "seq"},
@@ -95,8 +96,6 @@ for i in range(NUM_LAYERS):
     dynamic_axes[f"past_cross_v_{i}"] = {0: "batch"}
     dynamic_axes[f"present_self_k_{i}"] = {0: "batch", 2: "present_seq"}
     dynamic_axes[f"present_self_v_{i}"] = {0: "batch", 2: "present_seq"}
-    dynamic_axes[f"present_cross_k_{i}"] = {0: "batch"}
-    dynamic_axes[f"present_cross_v_{i}"] = {0: "batch"}
 
 flat_past = []
 for layer_kv in past_kv:
@@ -125,7 +124,6 @@ print("Output names:", [o.name for o in session.get_outputs()])
 
 feeds = {
     "input_ids": np.zeros((1, 1), dtype=np.int64),
-    "encoder_hidden_states": np.zeros((1, ENC_SEQ, D_MODEL), dtype=np.float32),
 }
 for i in range(NUM_LAYERS):
     feeds[f"past_self_k_{i}"] = np.zeros((1, NUM_HEADS, 0, HEAD_DIM), dtype=np.float32)
@@ -136,5 +134,5 @@ for i in range(NUM_LAYERS):
 outputs = session.run(None, feeds)
 print(f"Logits shape: {outputs[0].shape}")
 print(f"Present self_k_0 shape: {outputs[1].shape}")
-print(f"Present cross_k_0 shape: {outputs[3].shape}")
+print(f"Num outputs: {len(outputs)} (expect {1 + 2 * NUM_LAYERS})")
 print("KV-cache decoder export verified.")
