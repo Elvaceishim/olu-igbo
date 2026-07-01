@@ -83,8 +83,16 @@ The decoder runs at **~9 tokens/second**. It was ~10× slower until I fixed a me
 ### Running the app
 
 1. Clone this repo
-2. Build and install the Android app via Android Studio
-3. Hold the record button, speak Igbo, release
+2. Download the three INT8 ONNX models into `android/app/src/main/assets/` (they're gitignored due to size):
+   ```bash
+   cd android/app/src/main/assets
+   base=https://huggingface.co/theelvace/whisper-small-igbo-25k/resolve/main/onnx
+   for f in whisper_encoder_int8.onnx whisper_cross_attn_init_int8.onnx whisper_decoder_kvcache_int8.onnx; do
+     curl -L -O "$base/$f"
+   done
+   ```
+3. Build and install the Android app via Android Studio
+4. Hold the record button, speak Igbo, release
 
 Everything runs on-device. No server or network connection required.
 
@@ -104,7 +112,7 @@ Training and evaluation code is in `/training`, and ONNX export/quantization cod
 
 - The ELAN/`.eaf` parsing and audio-segmentation pipeline (`/igbosyncorp_extraction`) works for any ELAN-annotated linguistic corpus, not just Igbo
 - The three-stage ONNX export pattern (encoder / cross-attention init / KV-cache decoder) is a general technique for getting any encoder-decoder Whisper-family model running efficiently on mobile
-- The fine-tuned models are public on HuggingFace for anyone building Igbo language tools
+- The fine-tuned models and their INT8 ONNX exports are public on HuggingFace for anyone building Igbo language tools
 
 ## License
 
