@@ -14,14 +14,14 @@ This project fine-tunes Whisper Small for Igbo, exports it as a three-stage ONNX
 
 | Metric                                              | Value                                                           |
 | --------------------------------------------------- | --------------------------------------------------------------- |
-| **Word Error Rate (FLEURS Igbo test, 969 samples)** | **62.45%** (down from 68.95% baseline)                          |
-| Model size on disk (on-device)                      | 315 MB (88 MB encoder + 54 MB cross-attention + 173 MB decoder) |
-| Decoder throughput                                  | ~1 token/second average (Snapdragon 678, CPU-only)              |
-| Encoder latency                                     | ~3.8–4.1 seconds (fixed, processes 30s mel window)              |
+| **Word Error Rate (FLEURS Igbo test, 969 samples)** | **41.95%** (down from 68.95% baseline)                          |
+| Model size on disk (on-device)                      | 319 MB (93 MB encoder + 54 MB cross-attention + 172 MB decoder) |
+| Decoder throughput                                  | ~9 tokens/second (Snapdragon 678, CPU-only)                     |
+| End-to-end latency, short utterance                 | ~6–8 seconds                                                    |
 
-These are real numbers, measured directly on-device with `System.nanoTime()` instrumentation around each inference stage. Not estimated. The methodology section below explains exactly how I got from 68.95% to 62.45%, including what I tried that _didn't_ work.
+These are real numbers, measured directly on-device with `System.nanoTime()` instrumentation around each inference stage. Not estimated.
 
-> **Improvement in progress:** a warm-start full fine-tune lowers WER to **48.58%** (FLEURS test), and adding NaijaVoices data reaches **42.75%** on FLEURS validation (test confirmation pending) — see [Training methodology](#training-methodology). The on-device size/latency figures here describe the currently-exported 62.45% model; the improved model gets re-exported once it's finalized.
+**How WER got here:** 68.95% (zero-shot baseline) → 62.45% (LoRA on FLEURS + Common Voice) → 48.58% (warm-start full fine-tune) → **41.95%** (+ ~25k utterances of NaijaVoices read speech). The deployed model is [`theelvace/whisper-small-igbo-25k`](https://huggingface.co/theelvace/whisper-small-igbo-25k). Full story in [Training methodology](#training-methodology).
 
 ## Architecture
 
@@ -31,9 +31,9 @@ Whisper's standard encoder-decoder architecture doesn't export cleanly to a sing
 Audio → Mel spectrogram → [Encoder] → [Cross-attention init] → [KV-cache decoder loop] → Text
 ```
 
-1. **Encoder** (88 MB, quantized QUInt8): converts the 80×3000 mel spectrogram into 1500×768 hidden states. Runs once per utterance.
+1. **Encoder** (93 MB, INT8): converts the 80×3000 mel spectrogram into 1500×768 hidden states. Runs once per utterance.
 2. **Cross-attention initializer** (54 MB, kept FP32 deliberately — more on why below): pre-computes the cross-attention key/value cache from the encoder output. Also runs once per utterance.
-3. **KV-cache decoder** (173 MB, quantized INT8): greedy-decodes one token at a time, reusing both the pre-computed cross-attention cache and a growing self-attention cache, so each step only needs to process a single new token rather than the whole sequence so far.
+3. **KV-cache decoder** (172 MB, INT8): greedy-decodes one token at a time, reusing both the pre-computed cross-attention cache and a growing self-attention cache, so each step only processes a single new token rather than the whole sequence so far. Because the cross-attention K/V are constant across steps, the decoder outputs only the self-attention cache and the app reuses the cross tensors — a change that cut per-token time ~10× (see On-device benchmarks).
 
 Mel spectrogram extraction runs on-device in Kotlin (`computeLogMel` in `MainActivity.kt`). Getting it numerically identical to Whisper's reference was the subtlest correctness problem in the project: a first from-scratch implementation drifted enough to derail the decoder's cross-attention, so I initially offloaded it to a local server running the same `transformers` feature extractor the model was trained with. I later traced the drift to three specific mismatches — using the magnitude spectrum instead of power, framing without the centered/reflect-padded STFT (which also produced the wrong frame count), and a triangular filterbank missing Slaney mel-scale normalization — and fixed all three. The corrected Kotlin mel now matches the `transformers` extractor to ~1e-5 (verified in `mel_parity.py`), so the entire pipeline runs on-device with nothing offloaded.
 
@@ -49,7 +49,7 @@ While re-exporting the decoder after a later training run, I hit a failure mode 
 
 **What I tried that didn't work, and why that's worth knowing:** I sourced IgboSynCorp — a 40-hour annotated Igbo speech corpus from the University of Ibadan and Afe-Babalola University (Lacuna Fund-funded, hosted on Harvard Dataverse), built from oral narrative recordings across five Southeast Nigerian states. I wrote an ELAN (`.eaf`) parser using `pympi` to extract 2,962 clean, timestamp-aligned speech segments from the raw recordings — a genuinely reusable pipeline for anyone working with linguistic ELAN-annotated audio corpora. Merging this into training, even with FLEURS oversampled 2x to counteract domain dilution, consistently _regressed_ FLEURS test WER (63.99% and 63.54% in two separate trials) rather than improving it. My read: IgboSynCorp's oral-narrative recording style is acoustically and stylistically distant enough from FLEURS' read-speech style that training on it pulls the model away from the specific distribution it's evaluated against, even though the data itself is clean and the extraction pipeline worked correctly. I kept the verified 62.45% model rather than ship a result that looked better on training metrics but tested worse. The IgboSynCorp extraction code is included in this repo since the corpus itself is a real resource for future Igbo NLP work, even though it didn't help this specific benchmark.
 
-**Pushing further — full fine-tune + NaijaVoices:** With the 62.45% LoRA baseline established, I switched to a warm-start full fine-tune — merge the adapter into the base model, then fine-tune the whole network. The inference model stays the same size (still whisper-small, on-device-safe), but a full network has far more capacity than a 3.5M-parameter adapter. With SpecAugment added and checkpoints selected on FLEURS _validation_ (not test, to avoid fitting the reported number), this reached **48.58% on the FLEURS test set**. Then I added ~10k streamed utterances of [NaijaVoices](https://huggingface.co/datasets/naijavoices/naijavoices-dataset) — a ~600-hour Igbo read-speech corpus — which took it to **42.75% on FLEURS validation** (test confirmation pending GPU availability). Unlike IgboSynCorp, NaijaVoices is domain-compatible with FLEURS and helped from the first epoch. Training code: `training/train_full_finetune.py`.
+**Pushing further — full fine-tune + NaijaVoices:** With the 62.45% LoRA baseline established, I switched to a warm-start full fine-tune — merge the adapter into the base model, then fine-tune the whole network. The inference model stays the same size (still whisper-small, on-device-safe), but a full network has far more capacity than a 3.5M-parameter adapter. With SpecAugment added and checkpoints selected on FLEURS _validation_ (not test, to avoid fitting the reported number), this reached **48.58% on the FLEURS test set**. Then I streamed in **NaijaVoices** ([`naijavoices/naijavoices-dataset`](https://huggingface.co/datasets/naijavoices/naijavoices-dataset)) — a ~600-hour Igbo read-speech corpus. 10k utterances took it to 42.75% validation; scaling to **~25k utterances reached 40.02% validation / 41.95% on the held-out FLEURS test set** — the deployed model. Unlike IgboSynCorp, NaijaVoices is domain-compatible with FLEURS and helped from the first epoch. (A follow-up pass that heavily oversampled FLEURS to chase the last two points just overfit at 40.62% validation, so I kept the 25k model.) Training code: `training/train_full_finetune.py`.
 
 **Hard rules I learned:**
 
@@ -61,18 +61,17 @@ While re-exporting the decoder after a later training run, I hit a failure mode 
 
 Measured on a Redmi Note 10 (Snapdragon 678, no NPU/GPU delegation — CPU-only ONNX Runtime inference), instrumented directly in the app with `System.nanoTime()`:
 
-| Stage                                       | Latency         |
-| ------------------------------------------- | --------------- |
-| Mel extraction (on-device, Kotlin DFT)      | ~675–715 ms     |
-| Encoder inference                           | ~3.8–4.1 s      |
-| Cross-attention initialization              | ~916–924 ms     |
-| Decoder, per token                          | ~999 ms average |
-| **Total, short utterance (~5–8 tokens)**    | **~13–16 s**    |
-| **Total, longer utterance (~16–19 tokens)** | **~24–25 s**    |
+| Stage                                  | Latency     |
+| -------------------------------------- | ----------- |
+| Mel extraction (on-device, Kotlin DFT) | ~675–715 ms |
+| Encoder inference                      | ~3.8–4.1 s  |
+| Cross-attention initialization         | ~0.9 s      |
+| Decoder, per token                     | ~99 ms      |
+| **Total, short utterance**             | **~6–8 s**  |
 
-Decoder throughput improves slightly with longer outputs (0.63 → 0.84 tokens/sec) as the fixed encoder/cross-attention overhead amortizes over more generated tokens.
+The decoder runs at **~9 tokens/second**. It was ~10× slower until I fixed a memory bug: the app had been rebuilding the ~110 MB of cross-attention input tensors on _every single token_. Since those K/V are identical across decode steps, building them once and reusing them both eliminated intermittent out-of-memory crashes and cut per-token time from ~1 s to ~99 ms. The encoder (~3.9 s, fixed) is now the dominant cost.
 
-**Model size:** 315 MB total on-device (88 MB encoder + 54 MB cross-attention + 173 MB decoder), down from Whisper Small's ~970 MB unquantized checkpoint — roughly a 3x reduction. The cross-attention component is kept FP32 deliberately: INT8 quantization there introduced just enough numerical drift to derail decoder attention entirely, even though the same quantization was safe for the encoder and decoder. Documented as a real, measured tradeoff, not an oversight.
+**Model size:** 319 MB total on-device (93 MB encoder + 54 MB cross-attention + 172 MB decoder), down from Whisper Small's ~970 MB unquantized checkpoint — roughly a 3x reduction. The cross-attention component is kept FP32 deliberately: INT8 quantization there introduced just enough numerical drift to derail decoder attention entirely, even though the same quantization was safe for the encoder and decoder. Documented as a real, measured tradeoff, not an oversight.
 
 ## Setup instructions
 
@@ -91,19 +90,21 @@ Everything runs on-device. No server or network connection required.
 
 ### Reproducing the model
 
-Training and evaluation code is in `/training`, and ONNX export/quantization code is in `/export`. The model weights (LoRA adapter) and INT8 ONNX exports are published at [`theelvace/whisper-small-igbo`](https://huggingface.co/theelvace/whisper-small-igbo) on HuggingFace.
+Training and evaluation code is in `/training`, and ONNX export/quantization code is in `/export`. The deployed model is [`theelvace/whisper-small-igbo-25k`](https://huggingface.co/theelvace/whisper-small-igbo-25k) (full fine-tune); the original 62.45% LoRA adapter is at [`theelvace/whisper-small-igbo`](https://huggingface.co/theelvace/whisper-small-igbo).
+
+> **Export note:** the ONNX export scripts must run on the pinned stack (`torch==2.2.2`, `transformers==4.46.3`). Newer versions switch `torch.onnx` to a different exporter (writes weights as external data) and reject the legacy KV-cache format the decoder export relies on. `export/test_parity_kvcache.py` verifies the exported INT8 pipeline reproduces PyTorch token-for-token before deployment.
 
 ## Limitations, honestly stated
 
-- **62.45% WER is a real number, not a polished demo statistic.** Short, clear utterances transcribe well. Longer or more complex sentences show the model's actual error rate. I'd rather report this accurately than imply more than the model delivers.
-- **Live microphone audio is harder than clean test-set audio.** FLEURS' 62.45% WER is measured on studio-quality recordings; real-world phone mic input with background noise will generally perform worse.
-- **~1 token/second on CPU is slow** for a 173 MB decoder on a 2021 mid-range chip. The natural next optimization is NNAPI or GPU delegation, which this submission doesn't yet use.
+- **41.95% WER is a real number, not a polished demo statistic.** Short, clear utterances transcribe well. Longer or more complex sentences show the model's actual error rate. I'd rather report this accurately than imply more than the model delivers.
+- **Live microphone audio is harder than clean test-set audio.** The 41.95% is measured on FLEURS studio recordings; real phone-mic input (background noise, natural pacing) performs worse. On long or complex live sentences the model can fail to emit an end-of-sentence token and ramble until the token cap — short, clear utterances are the reliable sweet spot.
+- **The encoder (~3.9 s, fixed) now dominates latency.** After the cross-tensor fix the decoder is fast (~9 tok/s), so the next optimization is NNAPI or GPU/DSP delegation to offload the encoder — which this submission doesn't yet use.
 
 ## What's reusable here, beyond this specific model
 
 - The ELAN/`.eaf` parsing and audio-segmentation pipeline (`/igbosyncorp_extraction`) works for any ELAN-annotated linguistic corpus, not just Igbo
 - The three-stage ONNX export pattern (encoder / cross-attention init / KV-cache decoder) is a general technique for getting any encoder-decoder Whisper-family model running efficiently on mobile
-- The fine-tuned model and full ONNX exports are public on HuggingFace for anyone building Igbo language tools
+- The fine-tuned models are public on HuggingFace for anyone building Igbo language tools
 
 ## License
 
@@ -113,4 +114,4 @@ The **code** in this repository is MIT licensed.
 
 - Base model: OpenAI Whisper (MIT)
 - FLEURS (CC-BY-4.0), Common Voice Igbo (CC0)
-- NaijaVoices (CC-BY-NC-SA-4.0) — **non-commercial, share-alike**. The improved model (`theelvace/whisper-small-igbo-fullft`) is fine-tuned on NaijaVoices, so it inherits that non-commercial/share-alike restriction. The original 62.45% model (`theelvace/whisper-small-igbo`, FLEURS + Common Voice only) is not subject to it.
+- NaijaVoices (CC-BY-NC-SA-4.0) — **non-commercial, share-alike**. The deployed model (`theelvace/whisper-small-igbo-25k`) is fine-tuned on NaijaVoices, so it inherits that non-commercial/share-alike restriction. The original 62.45% model (`theelvace/whisper-small-igbo`, FLEURS + Common Voice only) is not subject to it.
