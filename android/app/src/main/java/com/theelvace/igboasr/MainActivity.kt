@@ -108,6 +108,12 @@ class MainActivity : AppCompatActivity() {
 
                 ortEnv = OrtEnvironment.getEnvironment()
                 val opts = OrtSession.SessionOptions()
+                // Arm CPU tuning: full graph optimization + all cores. We benchmarked the
+                // XNNPACK and NNAPI execution providers on this Snapdragon 678 and both
+                // regressed vs the default MLAS/NEON CPU path for this INT8 graph (NNAPI
+                // by 34%), so the tuned CPU EP is the fastest option here.
+                opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                opts.setIntraOpNumThreads(Runtime.getRuntime().availableProcessors())
 
                 val encoderFile  = File(filesDir, "whisper_encoder_int8.onnx")
                 val crossFile    = File(filesDir, "whisper_cross_attn_init_int8.onnx")
@@ -141,8 +147,6 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) { tvStatus.text = "Loading decoder..." }
                 decoderSession = ortEnv!!.createSession(decoderFile.absolutePath, opts)
                 decoderInputNames = decoderSession!!.inputNames.toList()
-
-                benchmarkEncoderEPs()  // TEMP: measure execution-provider options; remove after
 
                 withContext(Dispatchers.Main) {
                     tvStatus.text = "Ready — hold button to speak"
