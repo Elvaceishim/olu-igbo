@@ -142,6 +142,8 @@ class MainActivity : AppCompatActivity() {
                 decoderSession = ortEnv!!.createSession(decoderFile.absolutePath, opts)
                 decoderInputNames = decoderSession!!.inputNames.toList()
 
+                benchmarkEncoderEPs()  // TEMP: measure execution-provider options; remove after
+
                 withContext(Dispatchers.Main) {
                     tvStatus.text = "Ready — hold button to speak"
                 }
@@ -405,6 +407,57 @@ class MainActivity : AppCompatActivity() {
             .mapNotNull { vocab[it.toInt()] }
             .joinToString("")
             .trim()
+    }
+
+    // TEMP benchmark: times the encoder under different ONNX Runtime execution-provider
+    // configs so we can pick the fastest on this Arm device. Logs to Logcat tag EPBENCH.
+    private fun benchmarkEncoderEPs() {
+        val env = ortEnv ?: return
+        val encPath = File(filesDir, "whisper_encoder_int8.onnx").absolutePath
+        val cores = Runtime.getRuntime().availableProcessors()
+        android.util.Log.d("EPBENCH", "device cores = $cores")
+
+        fun bench(name: String, configure: (OrtSession.SessionOptions) -> Unit) {
+            var session: OrtSession? = null
+            try {
+                val o = OrtSession.SessionOptions()
+                configure(o)
+                session = env.createSession(encPath, o)
+                val input = OnnxTensor.createTensor(
+                    env, FloatBuffer.wrap(FloatArray(N_MELS * N_FRAMES)),
+                    longArrayOf(1, N_MELS.toLong(), N_FRAMES.toLong())
+                )
+                session.run(mapOf("input_features" to input)).close()  // warmup
+                var total = 0L
+                val runs = 3
+                repeat(runs) {
+                    val t = System.nanoTime()
+                    session.run(mapOf("input_features" to input)).close()
+                    total += System.nanoTime() - t
+                }
+                android.util.Log.d("EPBENCH", "$name = ${total / runs / 1_000_000} ms")
+                input.close()
+            } catch (e: Exception) {
+                android.util.Log.d("EPBENCH", "$name FAILED: ${e.message}")
+            } finally {
+                session?.close()
+            }
+        }
+
+        bench("1_default_cpu") { }
+        bench("2_cpu_graphopt_threads") {
+            it.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            it.setIntraOpNumThreads(cores)
+        }
+        bench("3_xnnpack") {
+            it.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            it.addXnnpack(mapOf("intra_op_num_threads" to cores.toString()))
+        }
+        bench("4_nnapi") {
+            it.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            it.addNnapi()
+        }
+        android.util.Log.d("EPBENCH", "benchmark done")
     }
 
     private fun ensureMelTables() {
