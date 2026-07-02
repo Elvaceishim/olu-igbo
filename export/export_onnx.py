@@ -45,10 +45,32 @@ else:
 model.eval()
 print(f"Model type: {type(model)}")
 
-print("Exporting encoder...")
-encoder = model.model.encoder
-# whisper encoder takes a fixed 80 x 3000 log-mel (30s at 16kHz)
-dummy_input = torch.zeros(1, 80, 3000)
+import torch.nn.functional as F
+
+
+class VariableEncoder(torch.nn.Module):
+    # Whisper's encoder hard-codes a 3000-frame (30s) input and adds a fixed 1500-position
+    # embedding. This wrapper slices the positional embedding to the ACTUAL input length,
+    # so we can encode shorter windows (e.g. 5s) and skip the wasted compute on padded
+    # silence. Mathematically identical to the original at the full 3000 frames.
+    def __init__(self, encoder):
+        super().__init__()
+        self.encoder = encoder
+
+    def forward(self, input_features):
+        enc = self.encoder
+        embeds = F.gelu(enc.conv1(input_features))
+        embeds = F.gelu(enc.conv2(embeds))
+        embeds = embeds.permute(0, 2, 1)
+        hidden = embeds + enc.embed_positions.weight[: embeds.shape[1]]
+        for layer in enc.layers:
+            hidden = layer(hidden, None, None)[0]
+        return enc.layer_norm(hidden)
+
+
+print("Exporting encoder (variable-length)...")
+encoder = VariableEncoder(model.model.encoder).eval()
+dummy_input = torch.zeros(1, 80, 3000)  # exported with a dynamic mel-frames axis
 
 torch.onnx.export(
     encoder,
@@ -57,8 +79,8 @@ torch.onnx.export(
     input_names=["input_features"],
     output_names=["last_hidden_state"],
     dynamic_axes={
-        "input_features": {0: "batch_size"},
-        "last_hidden_state": {0: "batch_size"},
+        "input_features": {0: "batch_size", 2: "mel_frames"},
+        "last_hidden_state": {0: "batch_size", 1: "enc_seq"},
     },
     opset_version=17,
     do_constant_folding=True,

@@ -92,8 +92,8 @@ dynamic_axes = {
 for i in range(NUM_LAYERS):
     dynamic_axes[f"past_self_k_{i}"] = {0: "batch", 2: "past_seq"}
     dynamic_axes[f"past_self_v_{i}"] = {0: "batch", 2: "past_seq"}
-    dynamic_axes[f"past_cross_k_{i}"] = {0: "batch"}
-    dynamic_axes[f"past_cross_v_{i}"] = {0: "batch"}
+    dynamic_axes[f"past_cross_k_{i}"] = {0: "batch", 2: "enc_seq"}
+    dynamic_axes[f"past_cross_v_{i}"] = {0: "batch", 2: "enc_seq"}
     dynamic_axes[f"present_self_k_{i}"] = {0: "batch", 2: "present_seq"}
     dynamic_axes[f"present_self_v_{i}"] = {0: "batch", 2: "present_seq"}
 

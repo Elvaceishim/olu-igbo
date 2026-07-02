@@ -60,9 +60,9 @@ output_names = []
 for i in range(NUM_LAYERS):
     output_names += [f"cross_k_{i}", f"cross_v_{i}"]
 
-dynamic_axes = {"encoder_hidden_states": {0: "batch"}}
+dynamic_axes = {"encoder_hidden_states": {0: "batch", 1: "enc_seq"}}
 for name in output_names:
-    dynamic_axes[name] = {0: "batch"}
+    dynamic_axes[name] = {0: "batch", 2: "enc_seq"}
 
 print("Exporting cross-attention initializer...")
 # Kept FP32 deliberately — INT8 here introduced enough drift to derail decoder
