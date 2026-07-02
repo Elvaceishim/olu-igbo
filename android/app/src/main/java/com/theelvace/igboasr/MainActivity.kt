@@ -241,13 +241,19 @@ class MainActivity : AppCompatActivity() {
 
         val melStart = System.nanoTime()
 
-        val melFeatures = computeLogMel(audio)
+        // Content-aware window: pick the smallest supported mel length that covers the
+        // recorded audio, so the encoder never processes 30s of padded silence for a
+        // short clip. This is the biggest on-device latency win (encoder cost scales
+        // with sequence length).
+        val audioFrames = (audio.size + HOP_LENGTH - 1) / HOP_LENGTH
+        val targetFrames = intArrayOf(500, 1000, 1500, 2000, N_FRAMES).firstOrNull { it >= audioFrames } ?: N_FRAMES
+        val melFeatures = computeLogMel(audio, targetFrames)
 
         val melEnd = System.nanoTime()
-        android.util.Log.d("BENCHMARK", "Mel extraction: ${(melEnd - melStart) / 1_000_000}ms")
+        android.util.Log.d("BENCHMARK", "Mel extraction: ${(melEnd - melStart) / 1_000_000}ms (${targetFrames / 100}s window)")
         val inputTensor = OnnxTensor.createTensor(
             env, FloatBuffer.wrap(melFeatures),
-            longArrayOf(1, N_MELS.toLong(), N_FRAMES.toLong())
+            longArrayOf(1, N_MELS.toLong(), targetFrames.toLong())
         )
 
         val encStart = System.nanoTime()
@@ -258,14 +264,17 @@ class MainActivity : AppCompatActivity() {
         val encEnd = System.nanoTime()
         android.util.Log.d("BENCHMARK", "Encoder inference: ${(encEnd - encStart) / 1_000_000}ms")
 
+        // encoder sequence length is dynamic now (= targetFrames / 2)
+        val encSeq = encoderHidden[0].size
+
         // flatten encoder output to row-major for the cross-attn session
-        val encFlat = FloatArray(ENC_SEQ * 768)
-        for (t in 0 until ENC_SEQ)
+        val encFlat = FloatArray(encSeq * 768)
+        for (t in 0 until encSeq)
             for (d in 0 until 768)
                 encFlat[t * 768 + d] = encoderHidden[0][t][d]
 
         val encTensorForCross = OnnxTensor.createTensor(
-            env, FloatBuffer.wrap(encFlat), longArrayOf(1, ENC_SEQ.toLong(), 768)
+            env, FloatBuffer.wrap(encFlat), longArrayOf(1, encSeq.toLong(), 768)
         )
         val crossStart = System.nanoTime()
         val crossOut = cross.run(mapOf("encoder_hidden_states" to encTensorForCross))
@@ -273,16 +282,16 @@ class MainActivity : AppCompatActivity() {
         val crossEnd = System.nanoTime()
         android.util.Log.d("BENCHMARK", "Cross-attn init: ${(crossEnd - crossStart) / 1_000_000}ms")
 
-        val crossKCache = Array(NUM_LAYERS) { FloatArray(NUM_HEADS * ENC_SEQ * HEAD_DIM) }
-        val crossVCache = Array(NUM_LAYERS) { FloatArray(NUM_HEADS * ENC_SEQ * HEAD_DIM) }
+        val crossKCache = Array(NUM_LAYERS) { FloatArray(NUM_HEADS * encSeq * HEAD_DIM) }
+        val crossVCache = Array(NUM_LAYERS) { FloatArray(NUM_HEADS * encSeq * HEAD_DIM) }
         for (i in 0 until NUM_LAYERS) {
             val ckArr = crossOut[i * 2].value as Array<Array<Array<FloatArray>>>
             val cvArr = crossOut[i * 2 + 1].value as Array<Array<Array<FloatArray>>>
             for (h in 0 until NUM_HEADS)
-                for (s in 0 until ENC_SEQ)
+                for (s in 0 until encSeq)
                     for (d in 0 until HEAD_DIM) {
-                        crossKCache[i][h * ENC_SEQ * HEAD_DIM + s * HEAD_DIM + d] = ckArr[0][h][s][d]
-                        crossVCache[i][h * ENC_SEQ * HEAD_DIM + s * HEAD_DIM + d] = cvArr[0][h][s][d]
+                        crossKCache[i][h * encSeq * HEAD_DIM + s * HEAD_DIM + d] = ckArr[0][h][s][d]
+                        crossVCache[i][h * encSeq * HEAD_DIM + s * HEAD_DIM + d] = cvArr[0][h][s][d]
                     }
         }
         crossOut.close()
@@ -304,11 +313,11 @@ class MainActivity : AppCompatActivity() {
         for (i in 0 until NUM_LAYERS) {
             crossFeeds["past_cross_k_$i"] = OnnxTensor.createTensor(
                 env, FloatBuffer.wrap(crossKCache[i]),
-                longArrayOf(1, NUM_HEADS.toLong(), ENC_SEQ.toLong(), HEAD_DIM.toLong())
+                longArrayOf(1, NUM_HEADS.toLong(), encSeq.toLong(), HEAD_DIM.toLong())
             )
             crossFeeds["past_cross_v_$i"] = OnnxTensor.createTensor(
                 env, FloatBuffer.wrap(crossVCache[i]),
-                longArrayOf(1, NUM_HEADS.toLong(), ENC_SEQ.toLong(), HEAD_DIM.toLong())
+                longArrayOf(1, NUM_HEADS.toLong(), encSeq.toLong(), HEAD_DIM.toLong())
             )
         }
 
@@ -482,13 +491,13 @@ class MainActivity : AppCompatActivity() {
 
     // On-device log-mel that matches the transformers WhisperFeatureExtractor.
     // Verified against the Python reference in mel_parity.py to ~1e-5.
-    private fun computeLogMel(audio: FloatArray): FloatArray {
+    private fun computeLogMel(audio: FloatArray, targetFrames: Int): FloatArray {
         ensureMelTables()
         val cosT = dftCos!!
         val sinT = dftSin!!
         val mel = melFilterBank!!
 
-        val target = SAMPLE_RATE * 30  // 480000 samples (30s)
+        val target = targetFrames * HOP_LENGTH  // only cover the frames we need
         val signal = FloatArray(target)
         audio.copyInto(signal, 0, 0, minOf(audio.size, target))
 
@@ -504,9 +513,9 @@ class MainActivity : AppCompatActivity() {
         val window = FloatArray(N_FFT) { i -> (0.5 - 0.5 * cos(2.0 * PI * i / N_FFT)).toFloat() }
 
         // torch.stft gives 1 + len/HOP frames then drops the last; this count matches.
-        val numFrames = minOf((padded.size - N_FFT) / HOP_LENGTH, N_FRAMES)
+        val numFrames = minOf((padded.size - N_FFT) / HOP_LENGTH, targetFrames)
 
-        val logMel = FloatArray(N_MELS * N_FRAMES)
+        val logMel = FloatArray(N_MELS * targetFrames)
         val frame = FloatArray(N_FFT)
         val power = FloatArray(N_FREQS)
         var maxVal = Float.NEGATIVE_INFINITY
@@ -532,7 +541,7 @@ class MainActivity : AppCompatActivity() {
                 var sum = 0f
                 for (k in 0 until N_FREQS) sum += fb[k] * power[k]
                 val v = log10(max(sum, 1e-10f))
-                logMel[m * N_FRAMES + t] = v
+                logMel[m * targetFrames + t] = v
                 if (v > maxVal) maxVal = v
             }
         }
